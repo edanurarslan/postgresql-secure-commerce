@@ -1,65 +1,61 @@
-{\rtf1\ansi\ansicpg1252\cocoartf2822
-\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
-{\colortbl;\red255\green255\blue255;}
-{\*\expandedcolortbl;;}
-\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
-\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+-- ============================================================================
+-- MODULE 5: REAL-TIME TRANSACTION AUDITING & LOGGING ARCHITECTURE
+-- ============================================================================
 
-\f0\fs24 \cf0 -- ============================================================================\
--- MODULE 1: DATABASE CREATION & SCHEMA ARCHITECTURE\
--- ============================================================================\
-\
--- Ensure execution context is master to drop/create databases safely\
-USE master;\
-\
--- Drop database if it exists to allow clean environment redeployments\
-DO $$\
-BEGIN\
-    IF EXISTS (SELECT 1 FROM pg_database WHERE datname = 'SecureCommerceDB') THEN\
-        PERFORM pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'SecureCommerceDB';\
-        EXECUTE 'DROP DATABASE "SecureCommerceDB"';\
-    END IF;\
-END $$;\
-\
--- Create the central project database\
-CREATE DATABASE "SecureCommerceDB";\
-\
--- [CRITICAL]: Switch your pgAdmin Query Tool connection to "SecureCommerceDB" before running the code below.\
--- ============================================================================\
-\
--- Create general public catalog table (Standard sensitivity)\
-CREATE TABLE public.products (\
-    product_id SERIAL CONSTRAINT pk_products PRIMARY KEY,\
-    product_name VARCHAR(100) NOT NULL,\
-    category VARCHAR(50) NOT NULL,\
-    unit_price NUMERIC(10,2) NOT NULL\
-);\
-\
--- Create initial customer table holding clear-text PII & Financial Data for staging\
-CREATE TABLE public.customers (\
-    customer_id SERIAL CONSTRAINT pk_customers PRIMARY KEY,\
-    full_name VARCHAR(100) NOT NULL,\
-    email VARCHAR(100) NOT NULL,\
-    phone_number VARCHAR(20) NULL,\
-    national_id CHAR(11) NOT NULL,          -- Critical PII (To be encrypted)\
-    credit_card_number VARCHAR(16) NOT NULL, -- PCI-DSS Scope (To be encrypted)\
-    monthly_income NUMERIC(10,2) NOT NULL   -- Sensitive Financial Data\
-);\
-\
--- ============================================================================\
--- DATA SEEDING (Populating the database with realistic enterprise data)\
--- ============================================================================\
-INSERT INTO public.products (product_name, category, unit_price) VALUES \
-('Smartphone X', 'Electronics', 999.99),\
-('Running Shoes', 'Apparel', 89.50),\
-('Wireless Headphones', 'Electronics', 149.99);\
-\
-INSERT INTO public.customers (full_name, email, phone_number, national_id, credit_card_number, monthly_income) VALUES \
-('Eda Nur Arslan', 'eda@arslan.com', '+905551234567', '12345678901', '4321876543210987', 4500.00),\
-('John Doe', 'john.doe@securemail.com', '+15559876543', '98765432101', '5555666677778888', 3200.00);\
-\
--- ============================================================================\
--- CORE VERIFICATION QUERIES\
--- ============================================================================\
-SELECT * FROM public.products;\
-SELECT * FROM public.customers;}
+-- 1. Create a secure, historical tracking ledger for operational audits
+CREATE TABLE public.database_audit_logs (
+    audit_id SERIAL PRIMARY KEY,
+    target_table VARCHAR(100) NOT NULL,
+    action_type VARCHAR(20) NOT NULL,    -- INSERT, UPDATE, or DELETE
+    executed_by VARCHAR(100) NOT NULL,    -- Captures exact runtime database identity
+    changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    old_data JSONB NULL,                 -- Captures row snapshot PRIOR to operation
+    new_data JSONB NULL                  -- Captures row snapshot AFTER operation
+);
+
+-- 2. Engine Logic: Develop the trigger procedure to serialize data changes into JSONB format
+CREATE OR REPLACE FUNCTION public.log_customer_changes()
+RETURNS TRIGGER 
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF (TG_OP = 'DELETE') THEN
+        INSERT INTO public.database_audit_logs (target_table, action_type, executed_by, old_data)
+        VALUES (TG_TABLE_NAME, TG_OP, session_user, to_jsonb(OLD));
+    ELSIF (TG_OP = 'UPDATE') THEN
+        INSERT INTO public.database_audit_logs (target_table, action_type, executed_by, old_data, new_data)
+        VALUES (TG_TABLE_NAME, TG_OP, session_user, to_jsonb(OLD), to_jsonb(NEW));
+    ELSIF (TG_OP = 'INSERT') THEN
+        INSERT INTO public.database_audit_logs (target_table, action_type, executed_by, new_data)
+        VALUES (TG_TABLE_NAME, TG_OP, session_user, to_jsonb(NEW));
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+-- 3. Automation Hook: Bind the auditing pipeline to the highly sensitive core asset table
+CREATE TRIGGER trg_customers_audit
+AFTER INSERT OR UPDATE OR DELETE ON public.customers
+FOR EACH ROW
+EXECUTE FUNCTION public.log_customer_changes();
+
+-- ============================================================================
+-- AUDIT TRAIL VERIFICATION LAB
+-- ============================================================================
+
+-- STEP A: Fire a mock transaction altering highly sensitive financial data (Monthly Income)
+UPDATE public.customers 
+SET monthly_income = 5200.00 
+WHERE full_name = 'John Doe';
+
+-- STEP B: Query the audit log pipeline to inspect the immutable security footprint
+-- Expected Result: A detailed row illustrating the transaction, showing old salary and new salary in a clear JSON block.
+SELECT 
+    audit_id, 
+    target_table, 
+    action_type, 
+    executed_by, 
+    changed_at, 
+    old_data, 
+    new_data 
+FROM public.database_audit_logs;
